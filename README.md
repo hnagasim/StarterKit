@@ -1,2 +1,2 @@
 # StarterKit
-SysTrack Report for Japan
+Repository for Japan SysTrack Starter Kit
