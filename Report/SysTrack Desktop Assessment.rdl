@@ -170,6 +170,12 @@ Group by CPUIDName,CPUClock,SYNUMPROC,syht</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
@@ -184,6 +190,7 @@ Select T0.WGUID,WSERVER,PRIM_USER
 from VUPERFDAILYJP T0
 inner join SAGUIDS T1 on T0.WGUID=T1.WGUID
 WHERE T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And PRIM_USER &lt;&gt; ''
+AND DOTY BETWEEN @StartDate and @EndDate
 Group by T0.WGUID,WSERVER,PRIM_USER
 Having Sum(A_ACTIVE_MIN) is not NULL
 Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END Desc</CommandText>
@@ -235,6 +242,12 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG]*[A_ACTIVE_M
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
@@ -244,7 +257,7 @@ SELECT DOTY,
 AVG(A_CPU_AVG_PERC)*100 as A_CPU_AVG_PERC,
 AVG(A_MEM_AVG_PERC)*100 as A_MEM_AVG_PERC
 FROM VUPERFDAILYJP
-WHERE A_ACTIVE_MIN &gt; 0 and WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
+WHERE A_ACTIVE_MIN &gt; 0 and WGUID IN (SELECT DISTINCT WGUID FROM @Systems) and DOTY BETWEEN @StartDate and @EndDate
 GROUP BY DOTY
 ORDER BY DOTY DESC</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
@@ -14086,7 +14099,7 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>Created using Lakeside SysTrack</Value>
+                    <Value>Created using Lakeside SysTrack　</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                       <FontSize>14pt</FontSize>
@@ -14136,6 +14149,45 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
+                    <Value>分析期間：</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontSize>14pt</FontSize>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>=Parameters!StartDate.Value</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontSize>12pt</FontSize>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>～</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontSize>12pt</FontSize>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>=Parameters!EndDate.Value</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontSize>12pt</FontSize>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                </TextRuns>
+                <Style>
+                  <TextAlign>Right</TextAlign>
+                </Style>
+              </Paragraph>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
                     <Value>Lakeside Software Japan</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
@@ -14148,27 +14200,12 @@ From RPT_GROUP</CommandText>
                   <TextAlign>Right</TextAlign>
                 </Style>
               </Paragraph>
-              <Paragraph>
-                <TextRuns>
-                  <TextRun>
-                    <Value />
-                    <Style>
-                      <FontFamily>メイリオ</FontFamily>
-                      <FontSize>11pt</FontSize>
-                      <FontWeight>Bold</FontWeight>
-                    </Style>
-                  </TextRun>
-                </TextRuns>
-                <Style>
-                  <TextAlign>Right</TextAlign>
-                </Style>
-              </Paragraph>
             </Paragraphs>
             <rd:DefaultName>Textbox2</rd:DefaultName>
             <Top>63.38006mm</Top>
-            <Left>170.36866mm</Left>
+            <Left>99.65583mm</Left>
             <Height>14.55208mm</Height>
-            <Width>96.29135mm</Width>
+            <Width>167.00418mm</Width>
             <ZIndex>15</ZIndex>
             <Style>
               <Border>
@@ -14345,7 +14382,7 @@ From RPT_GROUP</CommandText>
                   <TextRun>
                     <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のCPUの利用量平均を MIPS単位で表示しています。
 下段には各列の平均値を表示しています。一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、 PERFDAILYJPの System Viewを有効にしているか確認してください。</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
