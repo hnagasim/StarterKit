@@ -17,6 +17,12 @@
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
@@ -36,7 +42,8 @@ Select T2.WGUID, WSERVER as [SystemId],SYMANUFACT,SYMODEL,CPUIDNAME,CPUClock,SYN
 from RPT_DV_HARDWARE T2
 inner join SAGUIDS T3 on T2.WGUID=T3.WGUID
 inner join RPT_Operating_System T4 on T4.WGUID=T2.WGUID
-WHERE T2.WGUID IN (SELECT DISTINCT WGUID FROM @Systems)</CommandText>
+WHERE T2.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) 
+And T2.WGUID in (Select Distinct WGUID from VUPERFDAILYJP Where DOTY between @StartDate and @EndDate)</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -179,21 +186,40 @@ Group by CPUIDName,CPUClock,SYNUMPROC,syht</CommandText>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
-EXEC RPT_ProcessGroups @ParamGroup
-Select T0.WGUID,WSERVER,PRIM_USER
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active CPU Avg]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_STDEV]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active CPU StDev]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_PROC_QUEUE]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active Proc Queue]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active CPU Perc]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_USR_CPU_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])*100 END As [Active User CPU Perc]
+EXEC RPT_ProcessGroups @ParamGroup ;
+With MIPSRateCTE as (
+Select CPUIDName,SYNUMPROC as [Logical Core],syht
+,Round(avg(capsys),1) as [MIPS Capacity]
+, avg(case when syht &lt;&gt; 'No' then capsys/CPUCLOCK/1000/(SYNUMPROC/2)/1.2 ELSE capsys/CPUCLOCK/SYNUMPROC/1000 END) as [Rate]
+From 
+(Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+from RPT_SV_HARDWARE
+UNION
+Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+from RPT_DV_HARDWARE
+) t
+Group by CPUIDName,SYNUMPROC,syht
+)
+
+Select T0.WGUID,WSERVER,PRIM_USER,T3.Rate
+,SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) As [Active CPU Avg (MIPS)]
+,SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/T3.Rate As [Active CPU Avg (MHz)]
+,SUM([A_CPU_STDEV]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/T3.Rate As [Active CPU StDev (MHz)]
+,SUM([A_PROC_QUEUE]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) As [Active Proc Queue]
+,SUM([A_CPU_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) As [Active CPU Perc]
+,SUM([A_USR_CPU_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])*100 As [Active User CPU Perc]
 ,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_PRIV_CPU_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])*100 END As [Active Kernel CPU Perc]
 from VUPERFDAILYJP T0
-inner join SAGUIDS T1 on T0.WGUID=T1.WGUID
-WHERE T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And PRIM_USER &lt;&gt; ''
-AND DOTY BETWEEN @StartDate and @EndDate
-Group by T0.WGUID,WSERVER,PRIM_USER
+Inner Join SAGUIDS T1 on T0.WGUID=T1.WGUID
+Inner Join (Select WGUID,CPUIDNAME from RPT_SV_HARDWARE
+			Union Select WGUID,CPUIDNAME from RPT_DV_HARDWARE) T2 on T0.WGUID=T1.WGUID
+Inner Join MIPSRateCTE T3 on T2.CPUIDName = T3.CPUIDNAME
+WHERE T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And 
+PRIM_USER &lt;&gt; ''
+AND DOTY BETWEEN @StartDate and @EndDate And A_Active_Min &gt; 0
+Group by T0.WGUID,WSERVER,PRIM_USER,T3.Rate
 Having Sum(A_ACTIVE_MIN) is not NULL
-Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END Desc</CommandText>
+Order by SUM([A_CPU_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) Desc</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -209,12 +235,20 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_CPU_AVG]*[A_ACTIVE_M
           <DataField>PRIM_USER</DataField>
           <rd:TypeName>System.String</rd:TypeName>
         </Field>
-        <Field Name="Active_CPU_Avg">
-          <DataField>Active CPU Avg</DataField>
+        <Field Name="Rate">
+          <DataField>Rate</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Active_CPU_StDev">
-          <DataField>Active CPU StDev</DataField>
+        <Field Name="Active_CPU_Avg__MIPS_">
+          <DataField>Active CPU Avg (MIPS)</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
+        </Field>
+        <Field Name="Active_CPU_Avg__MHz_">
+          <DataField>Active CPU Avg (MHz)</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
+        </Field>
+        <Field Name="Active_CPU_StDev__MHz_">
+          <DataField>Active CPU StDev (MHz)</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="Active_Proc_Queue">
@@ -257,7 +291,7 @@ SELECT DOTY,
 AVG(A_CPU_AVG_PERC)*100 as A_CPU_AVG_PERC,
 AVG(A_MEM_AVG_PERC)*100 as A_MEM_AVG_PERC
 FROM VUPERFDAILYJP
-WHERE A_ACTIVE_MIN &gt; 0 and WGUID IN (SELECT DISTINCT WGUID FROM @Systems) and DOTY BETWEEN @StartDate and @EndDate
+WHERE PRIM_USER &lt;&gt; '' And A_ACTIVE_MIN &gt; 0 and WGUID IN (SELECT DISTINCT WGUID FROM @Systems) and DOTY BETWEEN @StartDate and @EndDate
 GROUP BY DOTY
 ORDER BY DOTY DESC</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
@@ -284,42 +318,116 @@ ORDER BY DOTY DESC</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
-EXEC RPT_ProcessGroups @ParamGroup
-DECLARE @MaxMIPS   INT = (Select Top 1 Max(A_CPU_AVG) from RPT_VUENTERPRISEPLANNING3)
-DECLARE @MinMIPS   INT = (Select Top 1 case when Min(A_CPU_AVG) &lt; 100 Then 0 Else Round(Min(A_CPU_AVG)-100,-2) End from RPT_VUENTERPRISEPLANNING3)
+EXEC RPT_ProcessGroups @ParamGroup ;
+DECLARE @MaxMHz As INT = 
+(Select Top 1 Max(Active_CPU_AVG) from
+	(
+	Select T0.WGUID,Avg(A_CPU_AVG/T2.Rate) as Active_CPU_AVG
+	from VUPERFDAILYJP T0
+	Inner Join RPT_System_Config T1 on T1.WGUID=T0.WGUID
+	Inner Join (
+		Select CPUIDName,SYNUMPROC as [Logical Core],syht
+		,Round(avg(capsys),1) as [MIPS Capacity]
+		, avg(case when syht &lt;&gt; 'No' then capsys/CPUCLOCK/1000/(SYNUMPROC/2)/1.2 ELSE capsys/CPUCLOCK/SYNUMPROC/1000 END) as [Rate]
+		From 
+			(Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_SV_HARDWARE
+			UNION
+			Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_DV_HARDWARE
+		) t
+		Group by CPUIDName,SYNUMPROC,syht 
+	) T2 on (T2.CPUIDNAME=T1.CPUIDName and T2.[Logical Core]=T1.NumberofLogicalProcessors)
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by t0.WGUID
+	)t
+ )
+
+DECLARE @MinMHz As INT = 
+(Select Top 1 case when Min(Active_CPU_AVG) &lt; 100 Then 0 Else Round(Min(Active_CPU_AVG)-100,-2) End from 
+	(
+	Select T0.WGUID,Avg(A_CPU_AVG/T2.rate) as Active_CPU_AVG
+	from VUPERFDAILYJP T0 
+	Inner Join RPT_System_Config T1 on T1.WGUID=T0.WGUID
+	Inner Join (
+		Select CPUIDName,SYNUMPROC as [Logical Core],syht
+		,Round(avg(capsys),1) as [MIPS Capacity]
+		, avg(case when syht &lt;&gt; 'No' then capsys/CPUCLOCK/1000/(SYNUMPROC/2)/1.2 ELSE capsys/CPUCLOCK/SYNUMPROC/1000 END) as [Rate]
+		From 
+			(Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_SV_HARDWARE
+			UNION
+			Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_DV_HARDWARE
+		) t
+		Group by CPUIDName,SYNUMPROC,syht 
+	) T2 on (T2.CPUIDNAME=T1.CPUIDName and T2.[Logical Core]=T1.NumberofLogicalProcessors)
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by T0.WGUID
+	)t
+)
 -- 度数分布の分割数
 Declare @numclass int = 20 
 -- 間隔は最大値と最小値の間を numclass で割って１００の位を切り捨てる
-DECLARE @Interval INT = Round( Case when (@MaxMIPS - @MinMIPS) &lt; 100 * @numclass Then 100
-                             Else Round((@MaxMIPS - @MinMIPS)/@numclass,-2) End
+DECLARE @Interval INT = Round( Case when (@MaxMHz - @MinMHz ) &lt; 100 * @numclass Then 100
+                             Else Round((@MaxMHz  - @MinMHz )/@numclass,-2) End
 							 ,-2)
-;WITH MIPSTable (MIPS)
+;WITH MHzTable (MHz)
 AS
 (
-     SELECT @MinMIPS
+     SELECT @MinMHz 
      UNION ALL
-     SELECT @Interval + MIPS
-     FROM   MIPSTable
-     WHERE  MIPS &lt; @MaxMIPS
+     SELECT @Interval + MHz
+     FROM   MHzTable
+     WHERE  MHz &lt; @MaxMHz 
 )
-SELECT  MIPS , MIPS+@Interval as [MIPS_MAX],Sum(case when A_CPU_AVG is null then 0 else 1 end) as num_systems
-FROM    MIPSTable T0
-Left outer join RPT_VUENTERPRISEPLANNING3 T1 on T1.A_CPU_AVG between T0.MIPS and T0.MIPS + @Interval
+
+Select MHz , MHz+@Interval as [MHz_MAX],Sum(case when Active_CPU_AVG is null then 0 else 1 end) as num_systems
+from MHzTable T0
+Left outer join (
+	Select T0.WGUID,Avg(A_CPU_AVG/Rate) as Active_CPU_AVG
+	from VUPERFDAILYJP T0
+	Inner Join RPT_System_Config T1 on T1.WGUID=T0.WGUID
+	Inner Join (
+		Select CPUIDName,SYNUMPROC as [Logical Core],syht
+		,Round(avg(capsys),1) as [MIPS Capacity]
+		, avg(case when syht &lt;&gt; 'No' then capsys/CPUCLOCK/1000/(SYNUMPROC/2)/1.2 ELSE capsys/CPUCLOCK/SYNUMPROC/1000 END) as [Rate]
+		From 
+			(Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_SV_HARDWARE
+			UNION
+			Select CPUIDName,CPUCLOCK,SYNUMPROC,capsys,syht
+				from RPT_DV_HARDWARE
+		) t
+		Group by CPUIDName,SYNUMPROC,syht 
+	) T2 on (T2.CPUIDNAME=T1.CPUIDName and T2.[Logical Core]=T1.NumberofLogicalProcessors)
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by T0.WGUID
+	) T1 on T1.Active_CPU_AVG between T0.MHz and T0.MHz + @Interval
 WHERE T1.WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
-group by MIPS, MIPS+@Interval
+group by MHz, MHz+@Interval
 OPTION (MAXRECURSION 0);</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
-        <Field Name="MIPS">
-          <DataField>MIPS</DataField>
+        <Field Name="MHz">
+          <DataField>MHz</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
-        <Field Name="MIPS_MAX">
-          <DataField>MIPS_MAX</DataField>
+        <Field Name="MHz_MAX">
+          <DataField>MHz_MAX</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="num_systems">
@@ -335,19 +443,27 @@ OPTION (MAXRECURSION 0);</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
 EXEC RPT_ProcessGroups @ParamGroup
 Select T0.WGUID,WSERVER,PRIM_USER
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/1024.0/1024.0 END As [Active Mem Avg],Max(A_MEM_MAX)/1024.0/1024.0 as [Active Mem Max],Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_STDEV]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/1024.0/1024.0 END As [Active Mem StDev]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_PGFL_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active Page Files/sec]
-,Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END As [Active Mem Perc]
-from RPT_VUPERFDAILY T0
+,SUM([A_MEM_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/1024.0/1024.0 As [Active Mem Avg]
+,SUM([A_MEM_STDEV]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN])/1024.0/1024.0 As [Active Mem StDev]
+,SUM([A_PGFL_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) As [Active Page Files/sec]
+,SUM([A_MEM_AVG_PERC]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) As [Active Mem Perc]
+from VUPERFDAILYJP T0
 inner join SAGUIDS T1 on T0.WGUID=T1.WGUID
 WHERE T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And PRIM_USER &lt;&gt; ''
+AND A_ACTIVE_MIN &gt; 0 AND DOTY BETWEEN @StartDate And @EndDate
 Group by T0.WGUID,WSERVER,PRIM_USER
-Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END Desc</CommandText>
+Order by SUM([A_MEM_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) Desc</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -365,10 +481,6 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_M
         </Field>
         <Field Name="Active_Mem_Avg">
           <DataField>Active Mem Avg</DataField>
-          <rd:TypeName>System.Double</rd:TypeName>
-        </Field>
-        <Field Name="Active_Mem_Max">
-          <DataField>Active Mem Max</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="Active_Mem_StDev">
@@ -392,13 +504,40 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_M
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
 EXEC RPT_ProcessGroups @ParamGroup
 
-DECLARE @MinMEM   INT = (Select Top 1 case when Min(A_MEM_AVG)/1024/1024 &lt; 100 Then 0 Else Round(Min(A_MEM_AVG)/1024/1024-100,-2) End from RPT_VUENTERPRISEPLANNING3)
-DECLARE @MaxMEM   INT = (Select Top 1 Max(A_MEM_AVG)/1024/1024 from RPT_VUENTERPRISEPLANNING3)
+DECLARE @MinMEM   INT = 
+(
+Select Top 1 case when Min(Active_MEM_AVG)/1024.0/1024.0 &lt; 100 Then 0 Else Round(Min(Active_MEM_AVG)/1024.0/1024.0-100,-2) End 
+from 	(
+	Select WGUID,Avg(A_MEM_AVG) as Active_MEM_AVG
+	from VUPERFDAILYJP
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by WGUID
+	)t
+)
+
+DECLARE @MaxMEM   INT = 
+(Select Top 1 Max(Active_MEM_AVG)/1024.0/1024.0 
+from 
+	(
+	Select WGUID,Avg(A_MEM_AVG) as Active_MEM_AVG
+	from VUPERFDAILYJP
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by WGUID
+	)t
+)
 Declare @numclass int = 20 
 -- 間隔は最大値と最小値の間を numclass で割って１００の位を切り捨てる
 DECLARE @Interval INT = Round( Case when (@MaxMEM - @MinMEM) &lt; 100 * @numclass Then 100
@@ -413,9 +552,16 @@ AS
      FROM   MEMTable
      WHERE  MEM &lt; @MaxMEM
 )
-SELECT  MEM , MEM+@Interval as [MEM_MAX],Sum(case when A_MEM_AVG is null then 0 else 1 end) as num_systems
+SELECT  MEM , MEM+@Interval as [MEM_MAX],Sum(case when Active_MEM_AVG is null then 0 else 1 end) as num_systems
 FROM    MEMTable T0
-Left outer join RPT_VUENTERPRISEPLANNING3 T1 on T1.A_MEM_AVG/1024/1024 between T0.MEM and T0.MEM + @Interval
+Left outer join
+	(
+	Select WGUID,Avg(A_MEM_AVG) as Active_MEM_AVG
+	from VUPERFDAILYJP
+	Where A_ACTIVE_MIN &gt; 0 And PRIM_USER &lt;&gt; '' 
+	AND DOTY BETWEEN @StartDate And @EndDate
+	Group by WGUID
+	) T1 on T1.Active_MEM_AVG/1024/1024 between T0.MEM and T0.MEM + @Interval
 WHERE T1.WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
 group by MEM , MEM + @Interval
 OPTION (MAXRECURSION 0);</CommandText>
@@ -443,25 +589,34 @@ OPTION (MAXRECURSION 0);</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
 EXEC RPT_ProcessGroups @ParamGroup
 
 Select T0.WGUID,WSERVER,PRIM_USER
-,Avg(IO_AVG) as [Avg IOPS]
-,Avg(IO_XFER_MS) as [Avg Transfer Time]
+,Avg(A_IO_AVG) as [Active Avg IOPS]
+,Avg(A_IO_XFER_MS_AVG) as [Active Avg Transfer Time]
 ,Avg(DISK_AVG_QLENGTH) as [Avg Disk Q Length]
 ,Avg(DISK_AVG_UTIL) as [Avg Disk Utilization PERC]
-,Avg(DISK_Free_PCNT) as [Avg Disk Free PERC]
-,Min(DISK_Free_PCNT) as [Min Disk Free PERC daily minimum]
-,Avg(DISK_Free_GB) as [Avg Disk Free GB]
-,Min(DISK_Free_GB) as [Avg Disk Free GB daily minimum]
-from RPT_VUPERFDAILY T0
+,Avg(C_DRIVE_FREE_PCNT) as [Avg C Drive Free PERC]
+,Min(C_DRIVE_FREE_PCNT) as [Min C Drive Free PERC daily minimum]
+,Avg(C_DISK_FREE_GB) as [Avg C Drive Free GB]
+,Min(C_DISK_FREE_GB) as [Avg C Drive Free GB daily minimum]
+from VUPERFDAILYJP T0
 inner join SAGUIDS T1 on T0.WGUID=T1.WGUID
-WHERE T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And PRIM_USER &lt;&gt; ''
+WHERE 
+ T0.WGUID IN (SELECT DISTINCT WGUID FROM @Systems) AND 
+ A_ACTIVE_MIN &gt; 0 AND PRIM_USER &lt;&gt; '' 
+ AND DOTY BETWEEN @StartDate And @EndDate
 Group by T0.WGUID,WSERVER,PRIM_USER
-Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_MIN])/SUM([A_ACTIVE_MIN]) END Desc</CommandText>
+Order by AVG(A_IO_AVG) Desc</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -477,12 +632,12 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_M
           <DataField>PRIM_USER</DataField>
           <rd:TypeName>System.String</rd:TypeName>
         </Field>
-        <Field Name="Avg_IOPS">
-          <DataField>Avg IOPS</DataField>
+        <Field Name="Active_Avg_IOPS">
+          <DataField>Active Avg IOPS</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Avg_Transfer_Time">
-          <DataField>Avg Transfer Time</DataField>
+        <Field Name="Active_Avg_Transfer_Time">
+          <DataField>Active Avg Transfer Time</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="Avg_Disk_Q_Length">
@@ -493,20 +648,20 @@ Order by Case WHEN SUM([A_ACTIVE_MIN])=0 THEN 0 ELSE SUM([A_MEM_AVG]*[A_ACTIVE_M
           <DataField>Avg Disk Utilization PERC</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Avg_Disk_Free_PERC">
-          <DataField>Avg Disk Free PERC</DataField>
+        <Field Name="Avg_C_Drive_Free_PERC">
+          <DataField>Avg C Drive Free PERC</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Min_Disk_Free_PERC_daily_minimum">
-          <DataField>Min Disk Free PERC daily minimum</DataField>
+        <Field Name="Min_C_Drive_Free_PERC_daily_minimum">
+          <DataField>Min C Drive Free PERC daily minimum</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Avg_Disk_Free_GB">
-          <DataField>Avg Disk Free GB</DataField>
+        <Field Name="Avg_C_Drive_Free_GB">
+          <DataField>Avg C Drive Free GB</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="Avg_Disk_Free_GB_daily_minimum">
-          <DataField>Avg Disk Free GB daily minimum</DataField>
+        <Field Name="Avg_C_Drive_Free_GB_daily_minimum">
+          <DataField>Avg C Drive Free GB daily minimum</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
       </Fields>
@@ -569,14 +724,20 @@ OPTION (MAXRECURSION 0);</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
 EXEC RPT_ProcessGroups @ParamGroup
 SELECT DOTY AS [Day]
 	, ROUND(ISNULL(AVG(WSCORE),0),2) AS [User Experience]
-FROM RPT_VUHEALTHDAILY
-WHERE DATEDIFF(DD,DOTY,GETUTCDATE()) &lt;= 31 and WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
+FROM VUHEALTHDAILYJP
+WHERE DOTY BETWEEN @StartDate And @EndDate And ActiveStatus=1 And WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
 GROUP BY DOTY</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
@@ -598,6 +759,12 @@ GROUP BY DOTY</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
         <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
 INSERT INTO @Systems
@@ -616,9 +783,10 @@ SELECT DOTY AS [Day]
 	, ROUND(ISNULL(AVG(WEVENT_COST),0),2) AS [Events]
 	, ROUND(ISNULL(AVG(WFAULT_COST),0),2) AS [Faults]
 	, ROUND(ISNULL(AVG(HWPROBLEM_COST),0),2) AS [Hardware]
-FROM RPT_VUHEALTHDAILY T1
-WHERE DATEDIFF(DD,DOTY,GETUTCDATE()) &lt;= 31 and T1.WGUID IN (SELECT DISTINCT WGUID FROM @Systems)
-GROUP BY DOTY</CommandText>
+FROM VUHEALTHDAILYJP T1
+WHERE T1.WGUID IN (SELECT DISTINCT WGUID FROM @Systems)	AND DOTY BETWEEN @StartDate And @EndDate And ActiveStatus=1
+GROUP BY DOTY
+Order by DOTY</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -687,19 +855,33 @@ GROUP BY DOTY</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
-        <CommandText>Select Top 15 AppName,MIPS_ACTIVE as [Avg MIPS while Active] ,MIPS_TOTALAVG as [Avg MIPS]
-,MIPS_TOTAL_SD as [MIPS STDEV]  
-,MIPS_TOTAL_MAX as [Max MIPS]
-,KTOU_RATIO as [Kernel to User Ratio]
-,TIME_ACTIVE * 1000 as [Total Active Hours]
-,TIME_TOTAL * 1000 as [Total Hours]
-,Systems as [Num Systems]
-,VERSIONS,USERS
-,TIME_TOTAL*MIPS_TOTALAVG as [Total MIPS]
-from RPT_SV_APPS
-Where GroupName=@ParamGroup
-Order By TIME_TOTAL*MIPS_TOTALAVG Desc</CommandText>
+        <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
+INSERT INTO @Systems
+EXEC RPT_ProcessGroups @ParamGroup
+Select Top 15 ApplicationName as [AppName]
+,Avg( (KernelActiveMillionInstructions + UserActiveMillionInstructions)/TimeActive*1000.0) as [Avg MIPS while Active]
+,Avg( (KernelTotalMillionInstructions + UserTotalMillionInstructions)/TotalTime*1000.0) as [Avg MIPS]
+,IsNull(STDEVP( (KernelTotalMillionInstructions + UserTotalMillionInstructions)/TotalTime*1000.0),0) as [MIPS STDEV]
+,Max( (KernelTotalMillionInstructions + UserTotalMillionInstructions)/TotalTime*1000.0) as [Max MIPS]
+,Sum(KernelTotalMillionInstructions)/(Sum(UserTotalMillionInstructions)+0.001) as [Kernel to User Ratio]
+,Sum(TimeActive)/1000.0/60.0/60.0 as [Total Active Hours]
+,Sum(TotalTime)/1000.0/60.0/60.0  as [Total Hours]
+,Count(Distinct WGUID) as [Num Systems]
+,COUNT(Distinct ApplicationVersion) as [Versions]
+-- Total MIPSは数が多すぎるので100万で割る
+,Sum(KernelTotalMillionInstructions + UserTotalMillionInstructions) /100000.0 as [Total MIPS]
+from RPT_Application
+Where TimeActive &gt; 0 And EndTime &gt; @StartDate And StartTime &lt; @EndDate
+And WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And ApplicationName &lt;&gt; 'lsiagent.exe'
+Group by ApplicationName
+Order by Sum(KernelTotalMillionInstructions + UserTotalMillionInstructions) DESC</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -740,11 +922,7 @@ Order By TIME_TOTAL*MIPS_TOTALAVG Desc</CommandText>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="VERSIONS">
-          <DataField>VERSIONS</DataField>
-          <rd:TypeName>System.Int32</rd:TypeName>
-        </Field>
-        <Field Name="USERS">
-          <DataField>USERS</DataField>
+          <DataField>Versions</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="Total_MIPS">
@@ -760,13 +938,31 @@ Order By TIME_TOTAL*MIPS_TOTALAVG Desc</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
-        <CommandText>Select Top 15 AppName,ACT_MEM_US as [Avg Mem while Active],MEM_USED_AVG,MEM_USED_MAX,MEM_USED_SD
-,Systems,VERSIONS,USERS,EXECS
-,TIME_TOTAL*100 as [Total Time], TIME_ACTIVE * 1000 as [Total Active Time]
-from RPT_SV_APPS
-Where GroupName=@ParamGroup And TIME_TOTAL &gt; 0.01
-Order by ACT_MEM_US Desc</CommandText>
+        <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
+INSERT INTO @Systems
+EXEC RPT_ProcessGroups @ParamGroup
+Select Top 15 
+ApplicationName as [AppName]
+,Sum(MemoryUsedWhileActive)/Sum(TimeActive/60000) as [Avg Mem while Active]
+,Sum(MemoryUsed)/Sum(TOTALTIME/60000) as [MEM_USED_AVG] 
+,Max(MemoryUsedWhileActive/(TimeActive/60000)) as [MEM_USED_MAX]
+,IsNull(STDEVP(MemoryUsedWhileActive/(TimeActive/60000)),0) as [MEM_USED_SD]
+,Count(Distinct WGUID) as [Systems]
+,COUNT(Distinct ApplicationVersion) as [Versions]
+,Sum(ExecutionCount) as [Execs]
+,Sum(TimeActive)/1000.0/60.0/60.0 as [Total Active Time]
+,Sum(TotalTime)/1000.0/60.0/60.0  as [Total Time]
+from RPT_Application
+Where WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And EndTime &gt; @StartDate And StartTime &lt; @EndDate And TimeActive &gt; 0 And ApplicationName &lt;&gt; 'lsiagent.exe'
+Group by ApplicationName
+Order by Avg(MemoryUsedWhileActive)/AVG(TimeActive/60000) Desc</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
@@ -795,23 +991,19 @@ Order by ACT_MEM_US Desc</CommandText>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="VERSIONS">
-          <DataField>VERSIONS</DataField>
-          <rd:TypeName>System.Int32</rd:TypeName>
-        </Field>
-        <Field Name="USERS">
-          <DataField>USERS</DataField>
+          <DataField>Versions</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="EXECS">
-          <DataField>EXECS</DataField>
-          <rd:TypeName>System.Double</rd:TypeName>
-        </Field>
-        <Field Name="Total_Time">
-          <DataField>Total Time</DataField>
+          <DataField>Execs</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="Total_Active_Time">
           <DataField>Total Active Time</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
+        </Field>
+        <Field Name="Total_Time">
+          <DataField>Total Time</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
       </Fields>
@@ -823,17 +1015,41 @@ Order by ACT_MEM_US Desc</CommandText>
           <QueryParameter Name="@ParamGroup">
             <Value>=Parameters!ParamGroup.Value</Value>
           </QueryParameter>
+          <QueryParameter Name="@StartDate">
+            <Value>=Parameters!StartDate.Value</Value>
+          </QueryParameter>
+          <QueryParameter Name="@EndDate">
+            <Value>=Parameters!EndDate.Value</Value>
+          </QueryParameter>
         </QueryParameters>
-        <CommandText>Select Top 15 APPNAME,IOPS_AVG,IOPS_MAX,IOPS_SD,IOPS_READ,IOPS_WRITE,IOPS_OTHER,BLK_SIZE_READ,BLK_SIZE_WRITE,Systems,VERSIONS,USERS
-,TIME_TOTAL*1000 as [Total Time],TIME_ACTIVE * 1000 as [Total Active Time]
-from RPT_SV_APPS
-Where GroupName=@ParamGroup and TIME_TOTAL &gt; 0.01
-Order by IOPS_AVG Desc</CommandText>
+        <CommandText>DECLARE @Systems TABLE (WGUID uniqueidentifier)
+INSERT INTO @Systems
+EXEC RPT_ProcessGroups @ParamGroup
+Select Top 15 
+ApplicationName as [AppName]
+,Sum(IOReadOperations+IOWriteOperations)/SUM(TotalTime / ExecutionCount / 1000)  as [IOPS_AVG]
+,Max((IOReadOperations+IOWriteOperations)/(TotalTime / ExecutionCount / 1000)) as [IOPS_MAX]
+,IsNull(StDevP((IOReadOperations+IOWriteOperations)/(TotalTime / ExecutionCount / 1000)),0) as [IOPS_SD]
+,Sum(IOReadOperations)/SUM(TotalTime / ExecutionCount / 1000)  as [IOPS_READ]
+,Sum(IOWriteOperations)/SUM(TotalTime / ExecutionCount / 1000) as [IOPS_Write]
+,Sum(IOOtherOperations)/SUM(TotalTime / ExecutionCount / 1000) as [IOPS_Other]
+,Avg(IOReadbytes/(IOReadOperations+1)) as [BLK_SIZE_READ]
+,Avg(IOWriteBytes/(IOWriteOperations+1)) as [BLK_SIZE_Write]
+,Count(Distinct WGUID) as [Systems]
+,Avg(ExecutionCount) as execs
+,COUNT(Distinct ApplicationVersion) as [Versions]
+,Sum(TotalTime)/1000.0/60.0/60.0  as [Total Time]
+,Sum(TimeActive)/1000.0/60.0/60.0 as [Total Active Time]
+From RPT_Application
+Where  TimeActive &gt; 0 And EndTime &gt; @StartDate And StartTime &lt; @EndDate
+And WGUID IN (SELECT DISTINCT WGUID FROM @Systems) And ApplicationName &lt;&gt; 'lsiagent.exe'
+Group by ApplicationName
+Order by Sum(IOReadOperations+IOWriteOperations) Desc</CommandText>
         <rd:UseGenericDesigner>true</rd:UseGenericDesigner>
       </Query>
       <Fields>
         <Field Name="APPNAME">
-          <DataField>APPNAME</DataField>
+          <DataField>AppName</DataField>
           <rd:TypeName>System.String</rd:TypeName>
         </Field>
         <Field Name="IOPS_AVG">
@@ -853,11 +1069,11 @@ Order by IOPS_AVG Desc</CommandText>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="IOPS_WRITE">
-          <DataField>IOPS_WRITE</DataField>
+          <DataField>IOPS_Write</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="IOPS_OTHER">
-          <DataField>IOPS_OTHER</DataField>
+          <DataField>IOPS_Other</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="BLK_SIZE_READ">
@@ -865,19 +1081,19 @@ Order by IOPS_AVG Desc</CommandText>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="BLK_SIZE_WRITE">
-          <DataField>BLK_SIZE_WRITE</DataField>
+          <DataField>BLK_SIZE_Write</DataField>
           <rd:TypeName>System.Double</rd:TypeName>
         </Field>
         <Field Name="Systems">
           <DataField>Systems</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
-        <Field Name="VERSIONS">
-          <DataField>VERSIONS</DataField>
-          <rd:TypeName>System.Int32</rd:TypeName>
+        <Field Name="execs">
+          <DataField>execs</DataField>
+          <rd:TypeName>System.Double</rd:TypeName>
         </Field>
-        <Field Name="USERS">
-          <DataField>USERS</DataField>
+        <Field Name="VERSIONS">
+          <DataField>Versions</DataField>
           <rd:TypeName>System.Int32</rd:TypeName>
         </Field>
         <Field Name="Total_Time">
@@ -2113,9 +2329,6 @@ From RPT_GROUP</CommandText>
                   <Width>25mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
-                </TablixColumn>
-                <TablixColumn>
                   <Width>43.78542mm</Width>
                 </TablixColumn>
               </TablixColumns>
@@ -2680,62 +2893,6 @@ From RPT_GROUP</CommandText>
                             </Paragraph>
                           </Paragraphs>
                           <rd:DefaultName>Textbox178</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>CornflowerBlue</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
-                        <Textbox Name="Textbox182">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>ユーザー数</Value>
-                                  <Style>
-                                    <FontFamily>メイリオ</FontFamily>
-                                    <FontWeight>Bold</FontWeight>
-                                    <Color>White</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style>
-                                <TextAlign>Center</TextAlign>
-                              </Style>
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Textbox180</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -3452,60 +3609,6 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="USERS2">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>=Fields!USERS.Value</Value>
-                                  <Style>
-                                    <FontFamily>Arial</FontFamily>
-                                    <FontWeight>Normal</FontWeight>
-                                    <Color>#333333</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style />
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>USERS2</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>White</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
                         <Textbox Name="Total_Time1">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -3620,7 +3723,6 @@ From RPT_GROUP</CommandText>
             </TablixBody>
             <TablixColumnHierarchy>
               <TablixMembers>
-                <TablixMember />
                 <TablixMember />
                 <TablixMember />
                 <TablixMember />
@@ -3791,7 +3893,7 @@ From RPT_GROUP</CommandText>
             <Top>1655.46622mm</Top>
             <Left>25.60804mm</Left>
             <Height>17.55625mm</Height>
-            <Width>403.75072mm</Width>
+            <Width>378.75072mm</Width>
             <ZIndex>1</ZIndex>
             <Style>
               <Border>
@@ -3809,13 +3911,10 @@ From RPT_GROUP</CommandText>
                   <Width>25mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>29.7625mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
-                </TablixColumn>
-                <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>33.55184mm</Width>
                 </TablixColumn>
                 <TablixColumn>
                   <Width>25mm</Width>
@@ -3956,7 +4055,8 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>最大メモリ</Value>
+                                  <Value>最大メモリ
+(アクティブ時)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -4013,6 +4113,21 @@ From RPT_GROUP</CommandText>
                               <TextRuns>
                                 <TextRun>
                                   <Value>標準偏差</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>(アクティブ時)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -4138,62 +4253,6 @@ From RPT_GROUP</CommandText>
                             </Paragraph>
                           </Paragraphs>
                           <rd:DefaultName>Textbox178</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>CornflowerBlue</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
-                        <Textbox Name="Textbox180">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>ユーザー数</Value>
-                                  <Style>
-                                    <FontFamily>メイリオ</FontFamily>
-                                    <FontWeight>Bold</FontWeight>
-                                    <Color>White</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style>
-                                <TextAlign>Center</TextAlign>
-                              </Style>
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Textbox180</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -4684,59 +4743,6 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="USERS1">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>=Fields!USERS.Value</Value>
-                                  <Style>
-                                    <FontWeight>Normal</FontWeight>
-                                    <Color>#333333</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style />
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>USERS1</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>White</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
                         <Textbox Name="Total_Time">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -4849,7 +4855,6 @@ From RPT_GROUP</CommandText>
             </TablixBody>
             <TablixColumnHierarchy>
               <TablixMembers>
-                <TablixMember />
                 <TablixMember />
                 <TablixMember />
                 <TablixMember />
@@ -5012,7 +5017,7 @@ From RPT_GROUP</CommandText>
             <Top>1567.09539mm</Top>
             <Left>25.4mm</Left>
             <Height>16.7625mm</Height>
-            <Width>290.29379mm</Width>
+            <Width>278.60813mm</Width>
             <ZIndex>2</ZIndex>
             <Style>
               <Border>
@@ -6275,10 +6280,10 @@ From RPT_GROUP</CommandText>
                   <Width>32.35059mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>35.8516mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>37.16682mm</Width>
+                  <Width>29.75849mm</Width>
                 </TablixColumn>
                 <TablixColumn>
                   <Width>34.40833mm</Width>
@@ -6287,7 +6292,7 @@ From RPT_GROUP</CommandText>
                   <Width>40.72032mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>33.32791mm</Width>
+                  <Width>35.44458mm</Width>
                 </TablixColumn>
                 <TablixColumn>
                   <Width>47.225mm</Width>
@@ -6296,12 +6301,12 @@ From RPT_GROUP</CommandText>
                   <Width>39.73425mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>62.14668mm</Width>
+                  <Width>51.37216mm</Width>
                 </TablixColumn>
               </TablixColumns>
               <TablixRows>
                 <TablixRow>
-                  <Height>6mm</Height>
+                  <Height>12.61458mm</Height>
                   <TablixCells>
                     <TablixCell>
                       <CellContents>
@@ -6424,7 +6429,22 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均 IOPS</Value>
+                                  <Value>平均 IOPS </Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>(アクティブ)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6480,7 +6500,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均ディスク遅延</Value>
+                                  <Value>平均ディスク遅延 (アクティブ)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6648,7 +6668,22 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均空き容量(%)</Value>
+                                  <Value>平均Cドライブ</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>空き容量(%)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6704,7 +6739,22 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均空き容量（日次の最小値）</Value>
+                                  <Value>平均Cドライブ空き容量</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>（日次の最小値-%）</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6760,7 +6810,22 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均ディスク空き容量(GB)</Value>
+                                  <Value>平均Cドライブ</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>空き容量(GB)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6816,7 +6881,22 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>平均ディスク空き容量(日次の最小値)</Value>
+                                  <Value>平均Cドライブ</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>空き容量(日次の最小値-GB)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -6976,14 +7056,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Avg_IOPS">
+                        <Textbox Name="Active_Avg_IOPS">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Avg_IOPS.Value</Value>
+                                  <Value>=Fields!Active_Avg_IOPS.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -6994,7 +7074,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Avg_IOPS</rd:DefaultName>
+                          <rd:DefaultName>Active_Avg_IOPS</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7010,14 +7090,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Avg_Transfer_Time">
+                        <Textbox Name="Active_Avg_Transfer_Time">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Avg_Transfer_Time.Value</Value>
+                                  <Value>=Fields!Active_Avg_Transfer_Time.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7028,7 +7108,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Avg_Transfer_Time</rd:DefaultName>
+                          <rd:DefaultName>Active_Avg_Transfer_Time</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7112,14 +7192,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Avg_Disk_Free_PERC">
+                        <Textbox Name="Avg_C_Drive_Free_PERC">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Avg_Disk_Free_PERC.Value</Value>
+                                  <Value>=Fields!Avg_C_Drive_Free_PERC.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Color>#333333</Color>
@@ -7129,7 +7209,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Avg_Disk_Free_PERC</rd:DefaultName>
+                          <rd:DefaultName>Avg_C_Drive_Free_PERC</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7165,14 +7245,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Min_Disk_Free_PERC_daily_minimum">
+                        <Textbox Name="Min_C_Drive_Free_PERC_daily_minimum">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Min_Disk_Free_PERC_daily_minimum.Value</Value>
+                                  <Value>=Fields!Min_C_Drive_Free_PERC_daily_minimum.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Color>#333333</Color>
@@ -7182,7 +7262,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Min_Disk_Free_PERC_daily_minimum</rd:DefaultName>
+                          <rd:DefaultName>Min_C_Drive_Free_PERC_daily_minimum</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7218,14 +7298,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Avg_Disk_Free_GB">
+                        <Textbox Name="Avg_C_Drive_Free_GB">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Avg_Disk_Free_GB.Value</Value>
+                                  <Value>=Fields!Avg_C_Drive_Free_GB.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7236,7 +7316,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Avg_Disk_Free_GB</rd:DefaultName>
+                          <rd:DefaultName>Avg_C_Drive_Free_GB</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7252,14 +7332,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Avg_Disk_Free_GB_daily_minimum">
+                        <Textbox Name="Avg_C_Drive_Free_GB_daily_minimum">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Avg_Disk_Free_GB_daily_minimum.Value</Value>
+                                  <Value>=Fields!Avg_C_Drive_Free_GB_daily_minimum.Value</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>0.00;(0.00)</Format>
@@ -7270,7 +7350,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Avg_Disk_Free_GB_daily_minimum</rd:DefaultName>
+                          <rd:DefaultName>Avg_C_Drive_Free_GB_daily_minimum</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -7425,7 +7505,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Avg_IOPS.Value)</Value>
+                                  <Value>=Avg(Fields!Active_Avg_IOPS.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7459,7 +7539,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Avg_Transfer_Time.Value)</Value>
+                                  <Value>=Avg(Fields!Active_Avg_Transfer_Time.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7561,7 +7641,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Avg_Disk_Free_PERC.Value)</Value>
+                                  <Value>=Avg(Fields!Avg_C_Drive_Free_PERC.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7615,7 +7695,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Min_Disk_Free_PERC_daily_minimum.Value)</Value>
+                                  <Value>=Avg(Fields!Min_C_Drive_Free_PERC_daily_minimum.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7669,7 +7749,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Avg_Disk_Free_GB.Value)</Value>
+                                  <Value>=Avg(Fields!Avg_C_Drive_Free_GB.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>#,0.00;(#,0.00)</Format>
@@ -7703,7 +7783,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Avg_Disk_Free_GB_daily_minimum.Value)</Value>
+                                  <Value>=Avg(Fields!Avg_C_Drive_Free_GB_daily_minimum.Value)</Value>
                                   <Style>
                                     <FontWeight>Normal</FontWeight>
                                     <Format>0.00;(0.00)</Format>
@@ -7783,8 +7863,8 @@ From RPT_GROUP</CommandText>
             <DataSetName>DiskPerformance</DataSetName>
             <Top>869.31042mm</Top>
             <Left>17.145mm</Left>
-            <Height>18mm</Height>
-            <Width>414.4382mm</Width>
+            <Height>24.61458mm</Height>
+            <Width>409.22362mm</Width>
             <ZIndex>5</ZIndex>
             <Style>
               <Border>
@@ -8177,9 +8257,6 @@ From RPT_GROUP</CommandText>
                   <Width>46.223mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>39.21955mm</Width>
-                </TablixColumn>
-                <TablixColumn>
                   <Width>51.50993mm</Width>
                 </TablixColumn>
                 <TablixColumn>
@@ -8331,63 +8408,6 @@ From RPT_GROUP</CommandText>
                             </Paragraph>
                           </Paragraphs>
                           <rd:DefaultName>Textbox108</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>CornflowerBlue</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
-                        <Textbox Name="Textbox110">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>最大メモリ使用量</Value>
-                                  <Style>
-                                    <FontFamily>メイリオ</FontFamily>
-                                    <FontSize>11pt</FontSize>
-                                    <FontWeight>Bold</FontWeight>
-                                    <Color>White</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style>
-                                <TextAlign>Center</TextAlign>
-                              </Style>
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Textbox110</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -8739,59 +8759,6 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Active_Mem_Max">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>=Fields!Active_Mem_Max.Value</Value>
-                                  <Style>
-                                    <FontWeight>Normal</FontWeight>
-                                    <Color>#333333</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style />
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Active_Mem_Max</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>White</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
                         <Textbox Name="Active_Mem_StDev">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -9116,60 +9083,6 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Textbox121">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>=Avg(Fields!Active_Mem_Max.Value)</Value>
-                                  <Style>
-                                    <FontWeight>Normal</FontWeight>
-                                    <Format>#,0.00;(#,0.00)</Format>
-                                    <Color>#333333</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style />
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Textbox121</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>White</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
                         <Textbox Name="Textbox122">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -9322,7 +9235,6 @@ From RPT_GROUP</CommandText>
                 <TablixMember />
                 <TablixMember />
                 <TablixMember />
-                <TablixMember />
               </TablixMembers>
             </TablixColumnHierarchy>
             <TablixRowHierarchy>
@@ -9343,7 +9255,7 @@ From RPT_GROUP</CommandText>
             <Top>632.41375mm</Top>
             <Left>16.22628mm</Left>
             <Height>18mm</Height>
-            <Width>334.38176mm</Width>
+            <Width>295.16221mm</Width>
             <ZIndex>7</ZIndex>
             <Style>
               <Border>
@@ -9357,15 +9269,15 @@ From RPT_GROUP</CommandText>
                 <ChartMember>
                   <Group Name="Chart7_CategoryGroup">
                     <GroupExpressions>
-                      <GroupExpression>=Fields!MIPS.Value</GroupExpression>
+                      <GroupExpression>=Fields!MHz.Value</GroupExpression>
                     </GroupExpressions>
                   </Group>
                   <SortExpressions>
                     <SortExpression>
-                      <Value>=Fields!MIPS.Value</Value>
+                      <Value>=Fields!MHz.Value</Value>
                     </SortExpression>
                   </SortExpressions>
-                  <Label>=Fields!MIPS.Value</Label>
+                  <Label>=Fields!MHz.Value</Label>
                 </ChartMember>
               </ChartMembers>
             </ChartCategoryHierarchy>
@@ -9432,7 +9344,7 @@ From RPT_GROUP</CommandText>
                       <Color>#5c5c5c</Color>
                     </Style>
                     <ChartAxisTitle>
-                      <Caption>平均CPU利用量（MIPS)</Caption>
+                      <Caption>平均CPU利用量（MHz)</Caption>
                       <Style>
                         <FontSize>9pt</FontSize>
                         <Color>#5c5c5c</Color>
@@ -10147,7 +10059,10 @@ From RPT_GROUP</CommandText>
                   <Width>44.09806mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>37.7mm</Width>
+                  <Width>50.13542mm</Width>
+                </TablixColumn>
+                <TablixColumn>
+                  <Width>46.96042mm</Width>
                 </TablixColumn>
                 <TablixColumn>
                   <Width>39.21955mm</Width>
@@ -10290,7 +10205,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>Active CPU Avg</Value>
+                                  <Value>Active CPU Avg (MIPS)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -10339,6 +10254,62 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
+                        <Textbox Name="Textbox75">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>Active CPU Avg (Mhz)</Value>
+                                  <Style>
+                                    <FontFamily>メイリオ</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>White</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style>
+                                <TextAlign>Center</TextAlign>
+                              </Style>
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox75</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>Solid</Style>
+                            </Border>
+                            <TopBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </TopBorder>
+                            <BottomBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </RightBorder>
+                            <BackgroundColor>CornflowerBlue</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
                         <Textbox Name="Textbox77">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -10346,7 +10317,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>Active CPU 標準偏差</Value>
+                                  <Value>標準偏差 (Mhz)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -10732,14 +10703,14 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Active_CPU_Avg">
+                        <Textbox Name="Active_CPU_Avg__MIPS_">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Active_CPU_Avg.Value</Value>
+                                  <Value>=Fields!Active_CPU_Avg__MIPS_.Value</Value>
                                   <Style>
                                     <FontFamily>Arial</FontFamily>
                                     <FontWeight>Normal</FontWeight>
@@ -10751,7 +10722,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Active_CPU_Avg</rd:DefaultName>
+                          <rd:DefaultName>Active_CPU_Avg__MIPS_</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -10787,14 +10758,68 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Active_CPU_StDev">
+                        <Textbox Name="Active_CPU_Avg__MHz_">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Fields!Active_CPU_StDev.Value</Value>
+                                  <Value>=Fields!Active_CPU_Avg__MHz_.Value</Value>
+                                  <Style>
+                                    <FontFamily>Arial</FontFamily>
+                                    <FontWeight>Normal</FontWeight>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Active_CPU_Avg__MHz_</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>Solid</Style>
+                            </Border>
+                            <TopBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </TopBorder>
+                            <BottomBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </RightBorder>
+                            <BackgroundColor>White</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
+                        <Textbox Name="Active_CPU_StDev__MHz_">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Fields!Active_CPU_StDev__MHz_.Value</Value>
                                   <Style>
                                     <FontFamily>Arial</FontFamily>
                                     <FontWeight>Normal</FontWeight>
@@ -10806,7 +10831,7 @@ From RPT_GROUP</CommandText>
                               <Style />
                             </Paragraph>
                           </Paragraphs>
-                          <rd:DefaultName>Active_CPU_StDev</rd:DefaultName>
+                          <rd:DefaultName>Active_CPU_StDev__MHz_</rd:DefaultName>
                           <Style>
                             <Border>
                               <Style>Solid</Style>
@@ -11182,7 +11207,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Active_CPU_Avg.Value)</Value>
+                                  <Value>=Avg(Fields!Active_CPU_Avg__MIPS_.Value)</Value>
                                   <Style>
                                     <FontFamily>Arial</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -11210,6 +11235,60 @@ From RPT_GROUP</CommandText>
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
+                        <Textbox Name="Textbox80">
+                          <CanGrow>true</CanGrow>
+                          <KeepTogether>true</KeepTogether>
+                          <Paragraphs>
+                            <Paragraph>
+                              <TextRuns>
+                                <TextRun>
+                                  <Value>=Avg(Fields!Active_CPU_Avg__MHz_.Value)</Value>
+                                  <Style>
+                                    <FontFamily>Arial</FontFamily>
+                                    <FontWeight>Bold</FontWeight>
+                                    <Color>#333333</Color>
+                                  </Style>
+                                </TextRun>
+                              </TextRuns>
+                              <Style />
+                            </Paragraph>
+                          </Paragraphs>
+                          <rd:DefaultName>Textbox80</rd:DefaultName>
+                          <Style>
+                            <Border>
+                              <Style>Solid</Style>
+                            </Border>
+                            <TopBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </TopBorder>
+                            <BottomBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </BottomBorder>
+                            <LeftBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </LeftBorder>
+                            <RightBorder>
+                              <Color>Black</Color>
+                              <Style>Solid</Style>
+                              <Width>1pt</Width>
+                            </RightBorder>
+                            <BackgroundColor>White</BackgroundColor>
+                            <PaddingLeft>2pt</PaddingLeft>
+                            <PaddingRight>2pt</PaddingRight>
+                            <PaddingTop>2pt</PaddingTop>
+                            <PaddingBottom>2pt</PaddingBottom>
+                          </Style>
+                        </Textbox>
+                      </CellContents>
+                    </TablixCell>
+                    <TablixCell>
+                      <CellContents>
                         <Textbox Name="Active_CPU_StDev1">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -11217,7 +11296,7 @@ From RPT_GROUP</CommandText>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>=Avg(Fields!Active_CPU_StDev.Value)</Value>
+                                  <Value>=Avg(Fields!Active_CPU_StDev__MHz_.Value)</Value>
                                   <Style>
                                     <FontFamily>Arial</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -11417,6 +11496,7 @@ From RPT_GROUP</CommandText>
                 <TablixMember />
                 <TablixMember />
                 <TablixMember />
+                <TablixMember />
               </TablixMembers>
             </TablixColumnHierarchy>
             <TablixRowHierarchy>
@@ -11437,7 +11517,7 @@ From RPT_GROUP</CommandText>
             <Top>393.64332mm</Top>
             <Left>13.48746mm</Left>
             <Height>18mm</Height>
-            <Width>363.53949mm</Width>
+            <Width>422.93533mm</Width>
             <ZIndex>10</ZIndex>
             <Style>
               <Border>
@@ -14064,7 +14144,7 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>デジタル・ワークスペース・プランニングレポート</Value>
+                    <Value>デジタルワークスペース・プランニングレポート</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                       <FontSize>28pt</FontSize>
@@ -14380,9 +14460,20 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のCPUの利用量平均を MIPS単位で表示しています。
+                    <Value>以下の表では、分析期間中にSysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のCPUの利用量平均を MIPS単位で表示しています。（アクティブ時間内の集計）
 下段には各列の平均値を表示しています。一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYJPの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、PERFDAILYJPの System Viewを有効にしているかと期間中にアクティブな時間帯があったかどうかを確認してください</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                </TextRuns>
+                <Style />
+              </Paragraph>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
+                    <Value>。</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -14551,9 +14642,9 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のメモリの利用量平均をMB単位で表示しています。
+                    <Value>以下の表では、分析期間中にSysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のメモリの利用量平均をMB単位で表示しています。（アクティブ時間内の集計）
 下段には各列の平均値を表示しています。一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、PERFDAILYJPの System Viewを有効にしているかと期間中にアクティブな時間帯があったかどうかを確認してください</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -14653,9 +14744,9 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のメモリの利用量平均を MB単位で表示しています。
+                    <Value>以下の表では、分析期間中にSysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のメモリの利用量平均を MB単位で表示しています。
 一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、PERFDAILYJPの System Viewを有効にしているかと期間中にアクティブな時間帯があったかどうかを確認してください</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -14687,9 +14778,9 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）の平均IOPSを表示しています。
+                    <Value>以下の表では、分析期間中にSysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）の平均IOPSを表示しています。（アクティブ時間内の集計）
 下段には各列の平均値を表示しています。一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、PERFDAILYJPの System Viewを有効にしているかと期間中にアクティブな時間帯があったかどうかを確認してください</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -14789,9 +14880,9 @@ From RPT_GROUP</CommandText>
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>以下の表では、SysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のIOPS平均の分布を表示しています。
+                    <Value>以下の表では、分析期間中にSysTrackで収集した情報からシステムがログイン中（ロックや切断を除く）のIOPS平均の分布を表示しています。
 一般的にユーザーの利用状況が正規分布に近いとすると、標準偏差σとして、平均値±σの区間に約68%、平均値±2σの間に約95%のデータが存在します。
-※ この表に表示されない端末がある場合は、 PERFDAILYの System Viewを有効にしているか確認してください。</Value>
+※ この表に表示されない端末がある場合は、PERFDAILYJPの System Viewを有効にしているかと期間中にアクティブな時間帯があったかどうかを確認してください</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -15332,45 +15423,42 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
             <TablixBody>
               <TablixColumns>
                 <TablixColumn>
-                  <Width>31.42503mm</Width>
+                  <Width>32.05041mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>36.56659mm</Width>
+                  <Width>37.19197mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>25.62538mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>30.898mm</Width>
+                  <Width>31.52338mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>25.62538mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>34.56206mm</Width>
+                  <Width>35.18744mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>40.43794mm</Width>
+                  <Width>41.06332mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>25.62538mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>25.62538mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>25.62538mm</Width>
                 </TablixColumn>
                 <TablixColumn>
-                  <Width>25mm</Width>
-                </TablixColumn>
-                <TablixColumn>
-                  <Width>25mm</Width>
+                  <Width>38.06082mm</Width>
                 </TablixColumn>
               </TablixColumns>
               <TablixRows>
                 <TablixRow>
-                  <Height>13.40833mm</Height>
+                  <Height>12.35mm</Height>
                   <TablixCells>
                     <TablixCell>
                       <CellContents>
@@ -15980,14 +16068,14 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="Textbox69">
+                        <Textbox Name="Textbox74">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
                           <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>ユーザー数</Value>
+                                  <Value>合計利用量</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -15999,51 +16087,10 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
                                 <TextAlign>Center</TextAlign>
                               </Style>
                             </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>Textbox69</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>CornflowerBlue</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
-                        <Textbox Name="Textbox74">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
                             <Paragraph>
                               <TextRuns>
                                 <TextRun>
-                                  <Value>合計利用量</Value>
+                                  <Value>（MI/100万)</Value>
                                   <Style>
                                     <FontFamily>メイリオ</FontFamily>
                                     <FontWeight>Bold</FontWeight>
@@ -16634,59 +16681,6 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
                     </TablixCell>
                     <TablixCell>
                       <CellContents>
-                        <Textbox Name="USERS">
-                          <CanGrow>true</CanGrow>
-                          <KeepTogether>true</KeepTogether>
-                          <Paragraphs>
-                            <Paragraph>
-                              <TextRuns>
-                                <TextRun>
-                                  <Value>=Fields!USERS.Value</Value>
-                                  <Style>
-                                    <FontWeight>Normal</FontWeight>
-                                    <Color>#333333</Color>
-                                  </Style>
-                                </TextRun>
-                              </TextRuns>
-                              <Style />
-                            </Paragraph>
-                          </Paragraphs>
-                          <rd:DefaultName>USERS</rd:DefaultName>
-                          <Style>
-                            <Border>
-                              <Style>Solid</Style>
-                            </Border>
-                            <TopBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </TopBorder>
-                            <BottomBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </BottomBorder>
-                            <LeftBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </LeftBorder>
-                            <RightBorder>
-                              <Color>Black</Color>
-                              <Style>Solid</Style>
-                              <Width>1pt</Width>
-                            </RightBorder>
-                            <BackgroundColor>White</BackgroundColor>
-                            <PaddingLeft>2pt</PaddingLeft>
-                            <PaddingRight>2pt</PaddingRight>
-                            <PaddingTop>2pt</PaddingTop>
-                            <PaddingBottom>2pt</PaddingBottom>
-                          </Style>
-                        </Textbox>
-                      </CellContents>
-                    </TablixCell>
-                    <TablixCell>
-                      <CellContents>
                         <Textbox Name="Total_MIPS">
                           <CanGrow>true</CanGrow>
                           <KeepTogether>true</KeepTogether>
@@ -16756,7 +16750,6 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
                 <TablixMember />
                 <TablixMember />
                 <TablixMember />
-                <TablixMember />
               </TablixMembers>
             </TablixColumnHierarchy>
             <TablixRowHierarchy>
@@ -16780,10 +16773,10 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
                 <Direction>Descending</Direction>
               </SortExpression>
             </SortExpressions>
-            <Top>1483.23832mm</Top>
+            <Top>1482.70915mm</Top>
             <Left>25.4mm</Left>
-            <Height>19.40833mm</Height>
-            <Width>348.88962mm</Width>
+            <Height>18.35mm</Height>
+            <Width>343.20424mm</Width>
             <ZIndex>38</ZIndex>
             <Style>
               <Border>
@@ -16798,7 +16791,20 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここではCPU利用量の大きいアプリケーションの上位15個をリストしています。利用量はMIPSで表示しています。</Value>
+                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここでは</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>全収集期間における</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>CPU利用量の大きいアプリケーションの上位15個をリストしています。利用量はMIPSで表示しています。</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -16820,9 +16826,16 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>※1 このデータはデスクトップOSからの情報のみを使用しています</Value>
+                    <Value>※1 このデータではSysTrackのデータ収集の特性上</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>分析期間の指定は無視されます</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <Color>Red</Color>
                     </Style>
                   </TextRun>
                 </TextRuns>
@@ -16942,7 +16955,20 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここではメモリ利用量の大きいアプリケーションの上位15個をリストしています。利用量はMIPSで表示しています。</Value>
+                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここでは</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>全収集期間における</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>メモリ利用量の大きいアプリケーションの上位15個をリストしています。利用量はMIPSで表示しています。</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -16964,9 +16990,16 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>※1 このデータはデスクトップOSからの情報のみを使用しています</Value>
+                    <Value>※1 このデータではSysTrackのデータ収集の特性上</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>分析期間の指定は無視されます</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <Color>Red</Color>
                     </Style>
                   </TextRun>
                 </TextRuns>
@@ -17063,7 +17096,20 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここではIOPSの大きいアプリケーションの上位15個をリストしています。</Value>
+                    <Value>SysTrackではアプリケーションの利用状況も分析することが出来ます。ここでは</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>全収集期間における</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <FontWeight>Bold</FontWeight>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>IOPSの多いアプリケーションの上位15個をリストしています。</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
                     </Style>
@@ -17085,9 +17131,16 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>※1 このデータはデスクトップOSからの情報のみを使用しています</Value>
+                    <Value>※1 このデータではSysTrackのデータ収集の特性上</Value>
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                  <TextRun>
+                    <Value>分析期間の指定は無視されます</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                      <Color>Red</Color>
                     </Style>
                   </TextRun>
                 </TextRuns>
@@ -17107,20 +17160,13 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
-                    <Value>※3 メモリの単位は MB で表示しています</Value>
+                    <Value>※3 Windowsの仕様上、プロセス単位のIOPSではファイル、ネットワークおよびデバイスの I/O を含むプロセスが生成するすべての I/O 処理状況をカウントします。</Value>
                     <Style>
+                      <FontStyle>Normal</FontStyle>
                       <FontFamily>メイリオ</FontFamily>
-                    </Style>
-                  </TextRun>
-                </TextRuns>
-                <Style />
-              </Paragraph>
-              <Paragraph>
-                <TextRuns>
-                  <TextRun>
-                    <Value />
-                    <Style>
-                      <FontFamily>メイリオ</FontFamily>
+                      <FontWeight>Normal</FontWeight>
+                      <TextDecoration>None</TextDecoration>
+                      <Color>#000000</Color>
                     </Style>
                   </TextRun>
                 </TextRuns>
@@ -17217,6 +17263,17 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
               <Paragraph>
                 <TextRuns>
                   <TextRun>
+                    <Value>※3 ペルソナ情報はサーバーOSで使用している場合やユーザー名の収集を禁止している環境では表示されません</Value>
+                    <Style>
+                      <FontFamily>メイリオ</FontFamily>
+                    </Style>
+                  </TextRun>
+                </TextRuns>
+                <Style />
+              </Paragraph>
+              <Paragraph>
+                <TextRuns>
+                  <TextRun>
                     <Value />
                     <Style>
                       <FontFamily>メイリオ</FontFamily>
@@ -17229,7 +17286,7 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
             <rd:DefaultName>Textbox48</rd:DefaultName>
             <Top>1699.03705mm</Top>
             <Left>25.4mm</Left>
-            <Height>20.37292mm</Height>
+            <Height>24.07709mm</Height>
             <Width>325.20804mm</Width>
             <ZIndex>46</ZIndex>
             <Style>
@@ -22044,7 +22101,7 @@ SysTrackでは以下の13の要因の影響を常に計測し、システムが�
           </Border>
         </Style>
       </Body>
-      <Width>478.39006mm</Width>
+      <Width>492.44105mm</Width>
       <Page>
         <PageHeader>
           <Height>25.4mm</Height>
